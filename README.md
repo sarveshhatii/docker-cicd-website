@@ -1,457 +1,460 @@
-# Automated Docker CI/CD Pipeline and AWS EC2 Deployment using GitHub Actions
+Automated Docker CI/CD Pipeline with AWS EC2 and HTTPS
+A static HTML website deployment project that automates Docker image
+building and deployment using GitHub Actions, Docker Hub, AWS
+EC2, and AWS Systems Manager (SSM). The public website is served
+through Nginx Proxy Manager, with a Let's Encrypt certificate
+for HTTPS.
+Project status note: The CI/CD build and deployment workflow has
+been working in the shared project. DNS, Nginx Proxy Manager,
+certificate issuance, and HTTPS redirection should be verified in the
+live environment before describing them as fully operational.
 
-##  Overview
-
-This project demonstrates how to automate the build, containerization, and deployment of a static website using **Docker, Docker Hub, GitHub Actions, AWS EC2, and AWS Systems Manager (SSM)**.
-
-Whenever new code is pushed to the `main` branch of the GitHub repository, GitHub Actions automatically builds a Docker image, pushes it to Docker Hub, and deploys the updated application to an AWS EC2 instance using AWS Systems Manager Run Command.
-
-The deployment uses **GitHub OIDC authentication** to access AWS without storing long-lived AWS access keys in GitHub Secrets.
-
-## Objectives
-
-- Containerize a static website using Docker.
-- Build and publish Docker images automatically.
-- Implement CI/CD using GitHub Actions.
-- Deploy the website on an AWS EC2 Ubuntu server.
-- Use GitHub OIDC for secure AWS authentication.
-- Use AWS Systems Manager instead of SSH for automated deployment.
-- Automatically replace the old container with the updated application.
-- Verify deployment success through the GitHub Actions workflow.
-
-##  Architecture
-
-```text
-Developer
-    |
-    | Push code to main
-    v
-GitHub Repository
-    |
-    v
-GitHub Actions Workflow
-    |
-    | Build Docker Image
-    v
-Docker Hub
-    |
-    | Push latest and commit-specific tags
-    v
-Docker Hub Repository
-    |
-    ^ Pull latest image
-    |
-AWS EC2 Ubuntu Server
-    ^
-    | AWS Systems Manager Run Command
-    |
-GitHub Actions
-    |
-    | GitHub OIDC authentication
-    v
-AWS IAM Role
-```
-
-### Application deployment flow
-
-1. A developer updates the website code.
-2. The changes are pushed to the GitHub `main` branch.
-3. GitHub Actions checks out the repository.
-4. Docker Buildx builds the Docker image.
-5. The image is pushed to Docker Hub.
-6. GitHub Actions authenticates to AWS using GitHub OIDC.
-7. The workflow sends deployment commands through AWS Systems Manager.
-8. The EC2 instance pulls the latest image from Docker Hub.
-9. The existing application container is removed and recreated.
-10. The updated website becomes available through the EC2 instance's public IP address.
-
-## 🛠️ Technologies Used
-
-| Technology | Purpose |
-|---|---|
-| HTML | Website content |
-| Docker | Containerization |
-| Nginx Alpine | Web server for serving the static website |
-| Docker Hub | Container image registry |
-| Git and GitHub | Source code management |
-| GitHub Actions | CI/CD automation |
-| AWS EC2 | Application hosting |
-| AWS IAM | Access control and permissions |
-| GitHub OIDC | Temporary AWS authentication |
-| AWS Systems Manager | Remote server access and deployment |
-| Ubuntu Server 24.04 LTS | EC2 operating system |
-
-##  Project Structure
-
-```text
+Table of contents
+- Project overview
+- Architecture
+- Technology stack
+- Repository structure
+- How the CI/CD pipeline works
+- Dockerfile
+- Docker Compose
+- GitHub Actions workflow
+- AWS and GitHub configuration
+- DNS and HTTPS setup
+- Deploying a website change
+- Verification commands
+- Troubleshooting
+- Security notes
+- Future improvements
+Project overview
+The goal is to deploy a website automatically when code is pushed to the
+main branch. Rather than manually copying files to a server, the
+pipeline builds a Docker image, publishes it to Docker Hub, and updates
+the website service on an AWS EC2 instance.
+Nginx Proxy Manager (NPM) is used as the public reverse proxy. It routes
+requests for the custom domain to the website container and manages the
+Let's Encrypt TLS certificate.
+Project links
+- GitHub repository:
+  https://github.com/sarveshhatii/docker-cicd-website
+- Docker Hub image:
+  https://hub.docker.com/r/sarveshhatii/cicd-website
+- Website domain: https://sarvesh.pranat.online/
+Main outcomes
+- Package a static HTML website with NGINX in a Docker image.
+- Build and publish the image automatically with GitHub Actions.
+- Store the image in Docker Hub using both latest and commit-SHA
+  tags.
+- Authenticate GitHub Actions to AWS using OpenID Connect (OIDC).
+- Deploy to EC2 by invoking AWS Systems Manager (SSM), without
+  requiring an SSH private key in the workflow.
+- Use Docker Compose to define the website and Nginx Proxy Manager
+  services.
+- Configure DNS, a Let's Encrypt certificate, and HTTP-to-HTTPS
+  redirection.
+Architecture
+Developer edits index.html
+        |
+        v
+Git commit and push to GitHub main
+        |
+        v
+GitHub Actions runner
+  1. Checkout source
+  2. Set up Docker Buildx
+  3. Log in to Docker Hub
+  4. Build and push image tags
+  5. Assume AWS IAM role using OIDC
+  6. Send deployment command using SSM
+        |
+        v
+AWS EC2 (Ubuntu + Docker Engine)
+  +-- website container: cicd-website
+  |      NGINX serves HTML on container port 80
+  |
+  +-- nginx-proxy-manager
+         Host port 80  -> HTTP
+         Host port 81  -> admin dashboard
+         Host port 443 -> HTTPS
+        |
+        v
+DNS: sarvesh.pranat.online -> EC2 public IPv4
+        |
+        v
+Browser -> Nginx Proxy Manager -> http://cicd-website:80
+        |
+        v
+Website over HTTPS
+Technology stack
+  Technology                          Purpose
+  HTML                                Static website content
+  NGINX Alpine                        Serves the HTML file inside the
+                                      container
+  Docker                              Packages the website and NGINX
+  Docker Compose                      Defines and manages the website and
+                                      NPM services
+  Git and GitHub                      Source control and repository
+                                      hosting
+  GitHub Actions                      Automates build, image publishing,
+                                      and deployment
+  Docker Hub                          Container image registry
+  AWS EC2                             Hosts the Docker containers
+  AWS IAM and GitHub OIDC             Grants the workflow temporary AWS
+                                      credentials
+  AWS Systems Manager                 Executes deployment commands on EC2
+  Nginx Proxy Manager                 Reverse proxy and TLS certificate
+                                      management
+  Let's Encrypt                       Free TLS certificate authority
+Repository structure
+The core project files are organized like this:
 docker-cicd-website/
-│
-├── .github/
-│   └── workflows/
-│       └── ci-cd.yml
-│
-├── Dockerfile
 ├── index.html
-└── README.md
-```
-
-### File descriptions
-
-- `index.html`: Contains the static website content.
-- `Dockerfile`: Defines how the Docker image is built.
-- `.github/workflows/ci-cd.yml`: Contains the automated CI/CD pipeline.
-- `README.md`: Documents the project, architecture, setup, and deployment.
-
-## 🐳 Docker Configuration
-
-The project uses the following Dockerfile:
-
-```dockerfile
+├── Dockerfile
+├── docker-compose.yml
+└── .github/
+    └── workflows/
+        └── ci-cd.yml
+Your repository may include additional files. Keep the workflow under
+.github/workflows/ so GitHub Actions can discover it.
+How the CI/CD pipeline works
+1. A developer changes index.html.
+2. The change is committed and pushed to main.
+3. GitHub Actions starts a job on a GitHub-hosted Ubuntu runner.
+4. The workflow checks out the repository and prepares Docker Buildx.
+5. It logs in to Docker Hub using GitHub repository secrets.
+6. It builds the Docker image and pushes:
+   - sarveshhatii/cicd-website:latest
+   - sarveshhatii/cicd-website:<commit-sha>
+7. GitHub Actions assumes the GitHubActions-EC2-Deploy AWS role
+   through OIDC.
+8. The workflow calls SSM to run deployment commands on EC2.
+9. EC2 pulls the latest website image and updates only the website
+   Compose service.
+10. The browser reaches the domain through Nginx Proxy Manager, which
+    forwards requests to the website container.
+Dockerfile
 FROM nginx:alpine
 
 COPY index.html /usr/share/nginx/html/index.html
 
 EXPOSE 80
-```
-
-### Explanation
-
-- `FROM nginx:alpine`: Uses a lightweight Nginx image based on Alpine Linux.
-- `COPY`: Copies the website's HTML file into Nginx's default web root.
-- `EXPOSE 80`: Documents that the containerized web server listens on port 80.
-
-Nginx serves the static HTML page to users who access the application.
-
-##  Run the Application Locally
-
-### Prerequisites
-
-Install the following tools:
-
-- Git
-- Docker Desktop
-- A GitHub account
-- A Docker Hub account
-- An AWS account
-
-Verify the local installations:
-
-```powershell
-git --version
-docker --version
-docker info
-```
-
-### Build the Docker image
-
-Run these commands from the project directory:
-
-```powershell
-docker build -t cicd-website:v1 .
-```
-
-### Run the container
-
-```powershell
-docker run -d --name cicd-website-local -p 8080:80 cicd-website:v1
-```
-
-Open the following address in a browser:
-
-```text
-http://localhost:8080
-```
-
-### Verify the container
-
-```powershell
-docker ps
-```
-
-### Stop and remove the local container
-
-```powershell
-docker stop cicd-website-local
-docker rm cicd-website-local
-```
-
-##  Docker Hub Configuration
-
-The Docker image is published to the following repository:
-
-**Docker Hub:** https://hub.docker.com/r/sarveshhatii/cicd-website
-
-The workflow publishes two image tags:
-
-```text
-sarveshhatii/cicd-website:latest
-sarveshhatii/cicd-website:<GitHub-commit-SHA>
-```
-
-The `latest` tag identifies the image used by the deployment commands. The commit-specific tag helps identify the image associated with a particular source-code revision.
-
-### GitHub repository secrets
-
-Configure the following secrets in:
-
-**GitHub Repository → Settings → Secrets and variables → Actions → New repository secret**
-
-| Secret | Value |
-|---|---|
-| `DOCKERHUB_USERNAME` | Your Docker Hub username |
-| `DOCKERHUB_TOKEN` | A Docker Hub access token |
-
-Never put Docker Hub access tokens or other credentials directly into source code or this README.
-
-## ☁️ AWS EC2 Configuration
-
-The website is hosted on an AWS EC2 Ubuntu instance.
-
-### Instance configuration
-
-| Setting | Configuration |
-|---|---|
-| Operating system | Ubuntu Server 24.04 LTS |
-| Instance type | `t3.micro` |
-| AWS Region | `ap-south-1` (Mumbai) |
-| Web server | Nginx running inside Docker |
-| Application port | TCP 80 |
-| Deployment method | AWS Systems Manager Run Command |
-
-### Security group
-
-Configure the EC2 security group according to the intended access requirements.
-
-| Protocol | Port | Purpose |
-|---|---:|---|
-| HTTP | 80 | Allows users to access the website |
-| SSH | 22 | Optional; only required if direct SSH access is needed |
-
-For a public website, HTTP port 80 may be allowed from `0.0.0.0/0`. Restrict SSH to trusted source IP addresses if SSH is required. If SSH is no longer needed and SSM access is verified, remove the inbound SSH rule.
-
-### Install Docker on EC2
-
-Connect through AWS Systems Manager Session Manager and run:
-
-```bash
-sudo apt update
-sudo apt install -y docker.io
-sudo systemctl enable --now docker
-sudo docker --version
-```
-
-Pull and run the application manually for an initial deployment:
-
-```bash
-sudo docker pull sarveshhatii/cicd-website:v1
-
-sudo docker run -d \
-  --name cicd-website \
-  --restart unless-stopped \
-  -p 80:80 \
-  sarveshhatii/cicd-website:v1
-```
-
-Verify the container:
-
-```bash
-sudo docker ps
-```
-
-Verify the web server locally on EC2:
-
-```bash
-curl -I http://localhost
-```
-
-Then open `http://<EC2-PUBLIC-IP>` in your browser.
-
-##  GitHub OIDC and AWS IAM Configuration
-
-GitHub Actions requires AWS permissions to send deployment commands. This project uses OpenID Connect (OIDC) to obtain temporary AWS credentials instead of storing long-lived AWS access keys in GitHub Secrets.
-
-### Required configuration
-
-1. Register GitHub's OIDC provider in AWS IAM.
-2. Create the `GitHubActions-EC2-Deploy` IAM role.
-3. Configure its trust policy to allow the intended GitHub repository and branch.
-4. Attach a least-privilege permissions policy that allows the workflow to send the required SSM command and check its execution status.
-5. Attach an EC2 instance role named `EC2-SSM-Role` with the AWS-managed `AmazonSSMManagedInstanceCore` policy.
-6. Confirm that the EC2 instance is online in Systems Manager.
-
-The GitHub Actions role and the EC2 instance role serve different purposes:
-
-- **GitHubActions-EC2-Deploy:** Allows the workflow to request deployment commands.
-- **EC2-SSM-Role:** Allows the EC2 instance's SSM Agent to communicate with Systems Manager.
-
-The workflow's OIDC trust policy must match the subject claim GitHub actually issues for the repository and branch. Do not assume that every repository uses the same subject format.
-
-The EC2 instance must have suitable outbound connectivity to Systems Manager, usually over HTTPS port 443, or access through appropriately configured VPC endpoints.
-
-## ⚙️ GitHub Actions CI/CD Workflow
-
-Workflow location:
-
-```text
-.github/workflows/ci-cd.yml
-```
-
-The workflow is triggered whenever code is pushed to the `main` branch.
- 
-            on:
-            push:
-                branches:
-                - main
-
- 
-
-**Note:** This workflow assumes the EC2 instance, IAM role, SSM connectivity, Docker installation, and GitHub secrets are already configured. The AWS account ID, region, instance ID, role ARN, and Docker Hub image name must match the actual environment before reuse.
-
-##  How Automatic Deployment Works
-
-When a change is pushed to GitHub:
-
-1. GitHub Actions starts the workflow.
-2. The source code is checked out.
-3. Docker Buildx builds a new image.
-4. The image is published to Docker Hub using the `latest` and commit-SHA tags.
-5. GitHub Actions obtains temporary AWS credentials using OIDC.
-6. AWS Systems Manager receives the deployment command.
-7. EC2 pulls the new `latest` image.
-8. The old application container is removed.
-9. A new container starts with port 80 mapped to port 80.
-10. The workflow polls Systems Manager for the command result and fails if deployment does not complete successfully within the configured time.
-
-To deploy a website update, edit `index.html`, commit the changes, and push to `main`.
-
-```powershell
-git add .
+Explanation
+- FROM nginx:alpine uses NGINX on the lightweight Alpine Linux base
+  image.
+- COPY places the website file in NGINX's default document root.
+- EXPOSE 80 documents the container port used by NGINX. It does not
+  publish the port to the EC2 host by itself.
+Docker Compose
+The HTTPS-oriented Compose configuration shared for this project is:
+version: '3.8'
+
+services:
+  website:
+    image: sarveshhatii/cicd-website:latest
+    container_name: cicd-website
+    restart: unless-stopped
+
+  nginx-proxy-manager:
+    image: 'jc21/nginx-proxy-manager:latest'
+    container_name: nginx-proxy-manager
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '81:81'
+      - '443:443'
+    volumes:
+      - ./data:/data
+      - ./letsencrypt:/etc/letsencrypt
+Important configuration details
+- The website service does not publish host port 80. Nginx Proxy
+  Manager owns the public ports 80 and 443.
+- NPM forwards requests to cicd-website on container port 80 over
+  the Compose network.
+- Port 81 is the NPM administration dashboard. Restrict it to a
+  trusted IP in the AWS security group where possible.
+- The ./data and ./letsencrypt mounts preserve NPM configuration
+  and certificate data when its container is recreated.
+- The workflow's SSM command expects the Compose file at
+  /home/ubuntu/docker-cicd-website/docker-compose.yml and a service
+  named website.
+Port conflict warning: If an older standalone cicd-website
+container still publishes host port 80, NPM cannot bind to that same
+host port. Inspect the live containers and plan the changeover before
+stopping or removing anything.
+
+GitHub Actions workflow
+The current workflow builds and pushes the image, authenticates to AWS
+through OIDC, and uses SSM to update the website service. The file path
+is .github/workflows/ci-cd.yml.
+name: Docker CI/CD to AWS EC2
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  DOCKERHUB_IMAGE: sarveshhatii/cicd-website
+  AWS_REGION: ap-south-1
+  EC2_INSTANCE_ID: i-050f5b054472305cf
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_IMAGE }}:latest
+            ${{ env.DOCKERHUB_IMAGE }}:${{ github.sha }}
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::020671572525:role/GitHubActions-EC2-Deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy image to EC2 using SSM
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy website updates safely" \
+            --parameters '{"commands":[
+              "set -e",
+              "cd /home/ubuntu/docker-cicd-website",
+              "sudo docker compose pull website",
+              "sudo docker compose up -d --no-deps website",
+              "sudo docker compose ps"
+            ]}' \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "SSM Command ID: $COMMAND_ID"
+
+          for i in {1..30}; do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$EC2_INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || true)
+
+            echo "Deployment status: $STATUS"
+
+            if [ "$STATUS" = "Success" ]; then
+              exit 0
+            fi
+
+            if [ "$STATUS" = "Failed" ] || \
+               [ "$STATUS" = "Cancelled" ] || \
+               [ "$STATUS" = "TimedOut" ]; then
+              aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" \
+                --instance-id "$EC2_INSTANCE_ID" \
+                --output json
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+          echo "Deployment did not finish within the expected time."
+          exit 1
+Workflow concepts
+  Item                                       Explanation
+  on.push.branches: main                   Triggers the workflow on pushes to
+                                             main.
+  runs-on: ubuntu-latest                   Runs the job on a GitHub-hosted
+                                             runner.
+  actions/checkout                         Checks out the repository source.
+  Docker Buildx                              Prepares Docker build tooling.
+  Docker login action                        Authenticates with Docker Hub using
+                                             secrets.
+  Docker build/push action                   Builds and publishes the image
+                                             tags.
+  id-token: write                          Allows the workflow to request a
+                                             GitHub OIDC token.
+  AWS credentials action                     Assumes the AWS IAM role using
+                                             OIDC.
+  aws ssm send-command                     Requests remote deployment commands
+                                             on EC2.
+  docker compose pull website              Pulls the latest image for the
+                                             website service.
+  docker compose up -d --no-deps website   Updates the website service without
+                                             deliberately recreating its
+                                             dependencies.
+  Polling loop                               Waits for SSM to finish and reports
+                                         failures/timeouts.
+AWS and GitHub configuration
+AWS resources used
+The project configuration records:
+- Region: ap-south-1 (Mumbai)
+- EC2 instance ID: i-050f5b054472305cf
+- GitHub Actions IAM role: GitHubActions-EC2-Deploy
+- EC2 Systems Manager role: EC2-SSM-Role
+These values are specific to the project account. Verify the instance,
+role ARNs, trust policies, and permissions before reusing the workflow
+in another account.
+GitHub repository secrets
+In GitHub → repository Settings → Secrets and variables → Actions,
+configure:
+  Secret                 Value
+  DOCKERHUB_USERNAME   Docker Hub username
+  DOCKERHUB_TOKEN      Docker Hub personal access token
+Never commit credentials into the repository. If a token was exposed,
+revoke it and update the GitHub secret.
+OIDC setup summary
+OIDC allows GitHub Actions to obtain short-lived AWS credentials instead
+of storing permanent AWS access keys in GitHub. The provider URL is
+https://token.actions.githubusercontent.com, and the audience is
+sts.amazonaws.com.
+The role trust policy must match the actual repository identity and OIDC
+claims. Use least-privilege permissions for SSM deployment rather than
+broad administrator access.
+EC2 security group
+  Port                    Purpose                 Suggested access
+  TCP 80                  HTTP and Let's Encrypt  Public
+                          HTTP-01 validation      
+  TCP 443                 HTTPS                   Public
+  TCP 81                  NPM administration      Trusted IP only
+  TCP 22                  Optional SSH            Trusted IP only; the
+                      administration          workflow uses SSM
+The instance also needs a reachable public endpoint, a suitable subnet
+route, and outbound connectivity for Docker image pulls and Systems
+Manager.
+DNS and HTTPS setup
+1. Configure DNS
+Create or verify an A record for sarvesh.pranat.online pointing to
+the EC2 instance's current public IPv4 address. DNS providers may expect
+the host/name as sarvesh for this subdomain.
+Check resolution in Windows PowerShell:
+nslookup sarvesh.pranat.online
+The returned IP should match the EC2 public IPv4 address. The address
+may change after stopping and starting EC2 unless an Elastic IP is
+attached.
+2. Access Nginx Proxy Manager
+Open:
+http://<EC2-PUBLIC-IP>:81
+Replace the placeholder with the current EC2 public IP. Ensure NPM is
+running and port 81 is permitted from your trusted IP. Change
+initial/default administrator credentials immediately.
+3. Add the proxy host
+In NPM, navigate to Hosts → Proxy Hosts → Add Proxy Host.
+  Setting                 Value
+  Domain Names            sarvesh.pranat.online
+  Scheme                  http
+  Forward Hostname / IP   cicd-website
+  Forward Port            80
+  Block Common Exploits   Enabled
+Save the host and verify that it appears as Online. Both containers
+should be connected to the same Compose network.
+4. Request a Let's Encrypt certificate
+1. Edit the proxy host and open the SSL tab.
+2. Select Request a new SSL Certificate with Let's Encrypt.
+3. Enter an email address and agree to the terms.
+4. Save and wait for issuance.
+5. Verify that the certificate is selected and active.
+Let's Encrypt HTTP-01 validation requires the domain to resolve to the
+server and inbound TCP port 80 to reach NPM. HTTPS requires inbound TCP
+port 443.
+5. Enforce HTTPS
+Edit the proxy host, open the SSL tab, enable Force SSL, and save.
+Test the website:
+curl -I http://sarvesh.pranat.online
+curl -I https://sarvesh.pranat.online
+Expected result: HTTP redirects to HTTPS, and the HTTPS website loads
+without a certificate warning. Verify this against the live server; a
+successful build alone does not prove that HTTPS is configured
+correctly.
+Deploying a website change
+After the pipeline is configured, normal content updates should follow
+this process:
+cd C:\Users\patil\Desktop\docker-cicd-website
+git status
+git add index.html
 git commit -m "Update website content"
 git push origin main
-```
-
-Monitor the run under:
-
-**GitHub Repository → Actions → Docker CI/CD to AWS EC2**
-
-##  Verification
-
-### Check GitHub Actions
-
-Confirm that all workflow steps complete successfully:
-
-- Checkout repository
-- Set up Docker Buildx
-- Log in to Docker Hub
-- Build and push Docker image
-- Configure AWS credentials using OIDC
-- Deploy image to EC2 using SSM
-
-### Check Docker Hub
-
-Open:
-
-https://hub.docker.com/r/sarveshhatii/cicd-website
-
-Verify that the `latest` and commit-specific tags are present.
-
-### Check EC2
-
-Using Session Manager, run:
-
-```bash
-sudo docker ps
-sudo docker images
-curl -I http://localhost
-```
-
-### Check the public website
-
-Open:
-
-```text
-http://<EC2-PUBLIC-IP>
-```
-
-Use HTTP unless HTTPS has been separately configured. If the instance is stopped and started, its public IPv4 address may change unless an Elastic IP is assigned.
-
-##  Security Best Practices
-
-- Use GitHub OIDC instead of long-lived AWS access keys.
-- Give the GitHub Actions IAM role only the permissions it needs.
-- Restrict the OIDC trust policy to the intended repository and branch.
-- Keep Docker Hub tokens in GitHub Secrets.
-- Never commit `.pem` private keys, passwords, or tokens.
-- Rotate or revoke any credential that has been exposed.
-- Restrict SSH port 22 to trusted IP addresses when SSH is needed.
-- Remove the SSH inbound rule when direct SSH is no longer required and an alternative recovery method is confirmed.
-- Keep the EC2 instance role separate from the GitHub Actions role.
-- Monitor AWS usage and costs.
-
-##  Troubleshooting
-
-| Problem | Possible cause | What to check |
-|---|---|---|
-| Docker build fails | Invalid Dockerfile or missing files | Check the build logs and project directory |
-| Docker Hub login fails | Incorrect username or token | Check the GitHub Secrets configuration |
-| OIDC authentication fails | Incorrect trust policy or subject claim | Verify the GitHub OIDC `sub`, audience, and role ARN |
-| SSM command cannot be sent | Insufficient IAM permissions | Check the GitHub Actions role policy |
-| EC2 is unavailable in SSM | Instance role, agent, or network problem | Verify `AmazonSSMManagedInstanceCore`, SSM Agent, and outbound connectivity |
-| Docker pull fails on EC2 | Registry access or image problem | Check Docker Hub visibility, image name, and tag |
-| Container fails to start | Port conflict or Docker error | Run `sudo docker ps -a` and inspect container logs |
-| Website is unreachable | Incorrect public IP or inbound HTTP rule | Check EC2 state, public IP, security group, and port 80 |
-| SSH connection fails | Source IP, key, username, or network issue | Verify SSH configuration or use Session Manager |
-
-To inspect application logs:
-
-```bash
-sudo docker logs cicd-website
-```
-
-To inspect container status:
-
-```bash
+Then:
+1. Open the repository's Actions tab.
+2. Confirm the workflow run succeeds.
+3. Check that the image was pushed to Docker Hub.
+4. Confirm the SSM deployment step succeeded.
+5. Refresh https://sarvesh.pranat.online/. Use Ctrl+F5 if cached
+   content appears.
+Verification commands
+On the local computer
+git status
+git log -1 --oneline
+docker images
+docker ps
+nslookup sarvesh.pranat.online
+curl.exe -I https://sarvesh.pranat.online
+On EC2 through AWS Systems Manager
+The SSM shell may start in an agent directory rather than the deployment
+directory. Use the full Compose path to avoid a
+no configuration file provided error.
+pwd
+sudo systemctl status docker
 sudo docker ps -a
-```
-
-##  Cost Considerations
-
-AWS resources may incur charges depending on usage, account eligibility, and current pricing. Check the AWS Billing Console and AWS Pricing Calculator before running the project for extended periods.
-
-Consider EC2 compute, storage, data transfer, and related AWS services. Stop or delete resources that are no longer needed, while remembering that some resources can continue to incur charges even when an instance is stopped.
-
-##  Future Improvements
-
-- Configure HTTPS with a domain name and TLS certificate.
-- Add automated tests and validation before deployment.
-- Use Docker image digests for stronger deployment reproducibility.
-- Add deployment health checks and rollback support.
-- Add monitoring and alerting.
-- Use separate development and production environments.
-- Add an approval step for production deployments.
-
-##  Learning Outcomes
-
-Through this project, I gained practical experience with:
-
-- Docker image creation and container management.
-- Publishing images to Docker Hub.
-- GitHub Actions workflows and automated CI/CD.
-- AWS EC2 provisioning and security groups.
-- AWS IAM roles and least-privilege access.
-- GitHub OIDC authentication.
-- AWS Systems Manager Session Manager and Run Command.
-- Automated remote deployment without requiring inbound SSH access.
-- Troubleshooting cloud deployment and networking issues.
-
- 
-
-GitHub: https://github.com/sarveshhatii
-
-Project Repository: https://github.com/sarveshhatii/docker-cicd-website
-
-Docker Hub: https://hub.docker.com/r/sarveshhatii/cicd-website
-
----
-
-⭐ If you find this project useful, feel free to explore the repository and learn how Docker and GitHub Actions can automate application deployment to AWS EC2.
+sudo cat /home/ubuntu/docker-cicd-website/docker-compose.yml
+sudo docker compose -f /home/ubuntu/docker-cicd-website/docker-compose.yml config
+sudo docker compose -f /home/ubuntu/docker-cicd-website/docker-compose.yml ps
+sudo ss -tulpn | grep -E ':(80|81|443)\b'
+sudo docker logs --tail 100 cicd-website
+sudo docker logs --tail 100 nginx-proxy-manager
+Troubleshooting
+  Problem                             What to check
+  docker compose ps says no         Use
+  configuration file                  -f /home/ubuntu/docker-cicd-website/docker-compose.yml.
+  Deployment directory cannot be      Check pwd and locate the actual Compose file before
+  found                               changing anything.
+  Port 80 is already in use           Inspect sudo docker ps -a and port listeners before
+                                      stopping/removing the old container.
+  NPM dashboard is unavailable        Check NPM container state, port 81 mapping, and
+                                      security-group access.
+  Proxy host returns 502 or Offline   Confirm the upstream is cicd-website:80, both services
+                                      are running, and they share a Compose network.
+  Let's Encrypt certificate request   Check DNS, inbound port 80, port ownership, and NPM logs.
+  fails                               
+  HTTPS times out                     Check inbound TCP 443 and NPM's port mapping.
+  GitHub OIDC role assumption fails   Check the IAM trust policy's repository subject and
+                                      audience.
+  SSM deployment fails                Inspect SSM command output, IAM permissions, instance ID,
+                                      region, Compose path, and service name.
+  Old page appears                    Review the Actions run and Docker Hub tags, then
+                                  hard-refresh the browser.
+Safety: Do not remove or restart production containers blindly.
+First inspect the current Compose file, running containers, port
+listeners, and logs.
+Security notes
+- Revoke and replace any exposed Docker Hub personal access token.
+- Never commit credentials, passwords, private keys, AWS access keys,
+  or full OIDC tokens.
+- Change NPM's default admin credentials and restrict port 81.
+- Use least-privilege IAM permissions.
+- Keep ports 80 and 443 available for public web traffic and
+  certificate validation.
+- Keep NPM configuration and certificate data in persistent volumes.
+- Review AWS charges for EC2, storage, and public IPv4 resources.
