@@ -252,7 +252,7 @@ jobs:
 
           for i in \$(seq 1 10); do
             if curl -fsS http://localhost:8081/ -o /tmp/candidate-index.html \
-              && grep -Fq "CI/CD Automation Test - October 2026" /tmp/candidate-index.html; then
+              && grep -Fq "Version 5.0 | CI/CD Project" /tmp/candidate-index.html; then
               CANDIDATE_OK=true
               echo "Candidate passed its content health check."
               break
@@ -294,7 +294,7 @@ jobs:
           # Verify the actual expected content on production.
           for i in \$(seq 1 10); do
             if curl -fsS http://localhost/ -o /tmp/production-index.html \
-              && grep -Fq "CI/CD Automation Test - October 2026" /tmp/production-index.html; then
+              && grep -Fq "Version 5.0 | CI/CD Project" /tmp/production-index.html; then
               DEPLOYED=true
               echo "Production deployment and content check succeeded."
               break
