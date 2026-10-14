@@ -1,7 +1,7 @@
 services:
   website:
     image: sarveshhatii/cicd-website:latest
-    container_name: cicd-website-compose-test
-    restart: unless-stopped
+    container_name: cicd-website
     ports:
-      - "8080:80"
+      - "80:80"
+    restart: unless-stopped

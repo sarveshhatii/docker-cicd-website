@@ -62,7 +62,7 @@ jobs:
             --instance-ids "$EC2_INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy website from GitHub Actions" \
-            --parameters '{"commands":["set -e","sudo docker pull sarveshhatii/cicd-website:latest","sudo docker rm -f cicd-website || true","sudo docker run -d --name cicd-website --restart unless-stopped -p 80:80 sarveshhatii/cicd-website:latest","sudo docker ps --filter name=cicd-website"]}' \
+            --parameters '{"commands":["set -e","cd /home/ubuntu/docker-cicd-website","sudo docker compose pull","sudo docker compose up -d --remove-orphans","sudo docker compose ps"]}'
             --query 'Command.CommandId' \
             --output text)
 
