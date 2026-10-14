@@ -54,22 +54,12 @@ jobs:
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$EC2_INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy website from GitHub Actions" \
+            --comment "Deploy website updates safely" \
             --parameters '{"commands":[
               "set -e",
-              "sudo mkdir -p /home/ubuntu/docker-cicd-website",
-              "cat << '\''EOF'\'' > /home/ubuntu/docker-cicd-website/docker-compose.yml",
-              "services:",
-              "  website:",
-              "    image: sarveshhatii/cicd-website:latest",
-              "    container_name: cicd-website",
-              "    ports:",
-              "      - \"80:80\"",
-              "    restart: unless-stopped",
-              "EOF",
-              "cd /home/ubuntu/docker-cicd-website",
-              "sudo docker compose pull",
-              "sudo docker compose up -d --remove-orphans",
+              "cd /home/ubuntu/production",
+              "sudo docker compose pull website",
+              "sudo docker compose up -d --no-deps website",
               "sudo docker compose ps"
             ]}' \
             --query 'Command.CommandId' \
