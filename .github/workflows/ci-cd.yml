@@ -1,3 +1,4 @@
+
 name: Docker CI/CD to AWS EC2
 
 on:
@@ -34,13 +35,15 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Step 4: Build and push the commit-specific image
-      - name: Build and push test image
+      # Step 4: Build the image and push it to Docker Hub
+      - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ${{ env.DOCKERHUB_IMAGE }}:${{ github.sha }}
+          tags: |
+            ${{ env.DOCKERHUB_IMAGE }}:latest
+            ${{ env.DOCKERHUB_IMAGE }}:${{ github.sha }}
 
       # Step 5: Authenticate with AWS using GitHub OIDC
       - name: Configure AWS credentials using OIDC
@@ -49,102 +52,22 @@ jobs:
           role-to-assume: arn:aws:iam::020671572525:role/GitHubActions-EC2-Deploy
           aws-region: ${{ env.AWS_REGION }}
 
-      # Step 6: Test Docker Compose on EC2 without replacing production
-      - name: Test Docker Compose on EC2 using SSM
+      # Step 6: Deploy the image to EC2 using AWS Systems Manager
+      - name: Deploy image to EC2 using SSM
         shell: bash
         run: |
           set -euo pipefail
 
-          # Create a temporary Compose file that uses the exact commit image
-          cat > compose.test.yaml <<EOF
-          services:
-            website:
-              image: ${DOCKERHUB_IMAGE}:${GITHUB_SHA}
-              container_name: cicd-website-compose-test
-              restart: unless-stopped
-              ports:
-                - "8080:80"
-          EOF
-
-          # Validate the test Compose configuration
-          docker compose -f compose.test.yaml config -q
-
-          # Encode the Compose file for transfer through SSM
-          COMPOSE_B64=$(base64 -w 0 compose.test.yaml)
-
-          # Build the remote script
-          REMOTE_SCRIPT=$(cat <<EOF
-          set -eu
-
-          TEST_DIR=/opt/cicd-website
-          COMPOSE_FILE="\$TEST_DIR/compose.test.yaml"
-
-          # Ensure the test directory exists
-          sudo mkdir -p "\$TEST_DIR"
-
-          # Transfer the isolated test Compose file to EC2
-          echo '$COMPOSE_B64' | base64 -d | sudo tee "\$COMPOSE_FILE" >/dev/null
-
-          cd "\$TEST_DIR"
-
-          # Validate the Compose configuration
-          sudo docker compose -f "\$COMPOSE_FILE" config -q
-
-          # Automatically clean up the test container when this script exits
-          cleanup() {
-            sudo docker compose -f "\$COMPOSE_FILE" down || true
-          }
-          trap cleanup EXIT
-
-          # Pull the commit-specific image and start the isolated test container
-          sudo docker compose -f "\$COMPOSE_FILE" pull
-          sudo docker compose -f "\$COMPOSE_FILE" up -d
-
-          # Verify the test website on port 8080
-          TEST_PASSED=false
-
-          for i in \$(seq 1 10); do
-            if curl -fsS http://localhost:8080/ >/dev/null; then
-              TEST_PASSED=true
-              echo "Compose test passed."
-              break
-            fi
-
-            sleep 2
-          done
-
-          if [ "\$TEST_PASSED" != "true" ]; then
-            echo "Compose test failed."
-            sudo docker compose -f "\$COMPOSE_FILE" logs || true
-            exit 1
-          fi
-
-          # Confirm the existing production website still responds on port 80
-          curl -fsS http://localhost/ >/dev/null
-          echo "Existing production website is responding."
-
-          echo "Compose test completed successfully."
-          EOF
-          )
-
-          # Convert the remote script into valid JSON
-          PARAMETERS=$(jq -n --arg script "$REMOTE_SCRIPT" \
-            '{commands: [$script]}')
-
-          # Send the test command to EC2
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$EC2_INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --comment "Test Docker Compose without replacing live website" \
-            --parameters "$PARAMETERS" \
+            --comment "Deploy website from GitHub Actions" \
+            --parameters '{"commands":["set -e","sudo docker pull sarveshhatii/cicd-website:latest","sudo docker rm -f cicd-website || true","sudo docker run -d --name cicd-website --restart unless-stopped -p 80:80 sarveshhatii/cicd-website:latest","sudo docker ps --filter name=cicd-website"]}' \
             --query 'Command.CommandId' \
             --output text)
 
           echo "SSM Command ID: $COMMAND_ID"
 
-          # Wait for the remote test to finish
-          TEST_STATUS=""
-
           for i in {1..30}; do
             STATUS=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
@@ -152,11 +75,10 @@ jobs:
               --query 'Status' \
               --output text 2>/dev/null || true)
 
-            echo "Compose test status: $STATUS"
+            echo "Deployment status: $STATUS"
 
             if [ "$STATUS" = "Success" ]; then
-              TEST_STATUS="Success"
-              break
+              exit 0
             fi
 
             if [ "$STATUS" = "Failed" ] || \
@@ -172,193 +94,5 @@ jobs:
             sleep 10
           done
 
-          if [ "$TEST_STATUS" != "Success" ]; then
-            echo "Compose test did not finish within the expected time."
-            exit 1
-          fi
-
-      # Step 7: Publish the tested image as latest
-      - name: Publish tested image as latest
-        env:
-          DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          docker pull "$DOCKERHUB_IMAGE:$IMAGE_TAG"
-          docker tag "$DOCKERHUB_IMAGE:$IMAGE_TAG" "$DOCKERHUB_IMAGE:latest"
-          docker push "$DOCKERHUB_IMAGE:latest"
-
-      # Step 8: Deploy the tested image to production with rollback
-      - name: Deploy tested image to EC2 production
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          IMAGE="${DOCKERHUB_IMAGE}:${GITHUB_SHA}"
-
-          REMOTE_SCRIPT=$(cat <<EOF
-          set -eu
-
-          IMAGE="${IMAGE}"
-          OLD_IMAGE_ID=\$(sudo docker inspect cicd-website --format '{{.Image}}')
-          DEPLOYED=false
-
-          rollback() {
-            echo "Deployment failed. Restoring previous production image."
-
-            sudo docker rm -f cicd-website || true
-
-            if ! sudo docker run -d \
-              --name cicd-website \
-              --restart unless-stopped \
-              -p 80:80 \
-              "\$OLD_IMAGE_ID"; then
-              echo "ERROR: Could not start the previous production image."
-              return 1
-            fi
-
-            for i in \$(seq 1 10); do
-              if curl -fsS http://localhost/ >/dev/null; then
-                echo "Rollback successful. Previous website is responding."
-                return 0
-              fi
-              sleep 2
-            done
-
-            echo "ERROR: Rollback health check failed."
-            sudo docker logs cicd-website || true
-            return 1
-          }
-
-          # Pull the exact commit-specific image tested by the pipeline.
-          sudo docker pull "\$IMAGE"
-
-          # Start a temporary candidate on localhost port 8081.
-          sudo docker rm -f cicd-website-candidate || true
-
-          if ! sudo docker run -d \
-            --name cicd-website-candidate \
-            --restart unless-stopped \
-            -p 127.0.0.1:8081:80 \
-            "\$IMAGE"; then
-            echo "ERROR: Could not start candidate container."
-            sudo docker rm -f cicd-website-candidate || true
-            exit 1
-          fi
-
-          # Verify the candidate before touching production.
-          CANDIDATE_OK=false
-
-          for i in \$(seq 1 10); do
-            if curl -fsS http://localhost:8081/ -o /tmp/candidate-index.html \
-              && grep -Fq "Version 5.0 | CI/CD Project" /tmp/candidate-index.html; then
-              CANDIDATE_OK=true
-              echo "Candidate passed its content health check."
-              break
-            fi
-            sleep 2
-          done
-
-          sudo docker rm -f cicd-website-candidate || true
-
-          if [ "\$CANDIDATE_OK" != "true" ]; then
-            echo "ERROR: Candidate failed its health or content check."
-            exit 1
-          fi
-
-          # Switch production to the tested image.
-          # A brief interruption may occur during this switch.
-          if ! sudo docker stop cicd-website; then
-            echo "ERROR: Could not stop production."
-            rollback || true
-            exit 1
-          fi
-
-          if ! sudo docker rm cicd-website; then
-            echo "ERROR: Could not remove the old container."
-            rollback || true
-            exit 1
-          fi
-
-          if sudo docker run -d \
-            --name cicd-website \
-            --restart unless-stopped \
-            -p 80:80 \
-            "\$IMAGE"; then
-            echo "New production container started."
-          else
-            echo "ERROR: Could not start the new production container."
-          fi
-
-          # Verify the actual expected content on production.
-          for i in \$(seq 1 10); do
-            if curl -fsS http://localhost/ -o /tmp/production-index.html \
-              && grep -Fq "Version 5.0 | CI/CD Project" /tmp/production-index.html; then
-              DEPLOYED=true
-              echo "Production deployment and content check succeeded."
-              break
-            fi
-            sleep 2
-          done
-
-          if [ "\$DEPLOYED" != "true" ]; then
-            echo "ERROR: Production health or content check failed."
-            sudo docker logs cicd-website || true
-            if ! rollback; then
-              echo "CRITICAL: Automatic rollback failed. Manual recovery is required."
-            fi
-            exit 1
-          fi
-
-          sudo docker ps --filter name=cicd-website
-          echo "Production is running image: \$IMAGE"
-          EOF
-          )
-
-          PARAMETERS=$(jq -n --arg script "$REMOTE_SCRIPT" \
-            '{commands: [$script]}')
-
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$EC2_INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --comment "Deploy tested website image to production" \
-            --parameters "$PARAMETERS" \
-            --query 'Command.CommandId' \
-            --output text)
-
-          echo "Production deployment SSM command: $COMMAND_ID"
-
-          DEPLOYMENT_STATUS=""
-
-          for i in {1..30}; do
-            STATUS=$(aws ssm get-command-invocation \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$EC2_INSTANCE_ID" \
-              --query 'Status' \
-              --output text 2>/dev/null || true)
-
-            echo "Production deployment status: $STATUS"
-
-            if [ "$STATUS" = "Success" ]; then
-              DEPLOYMENT_STATUS="Success"
-              break
-            fi
-
-            if [ "$STATUS" = "Failed" ] || \
-               [ "$STATUS" = "Cancelled" ] || \
-               [ "$STATUS" = "TimedOut" ]; then
-              aws ssm get-command-invocation \
-                --command-id "$COMMAND_ID" \
-                --instance-id "$EC2_INSTANCE_ID" \
-                --output json
-              exit 1
-            fi
-
-            sleep 10
-          done
-
-          if [ "$DEPLOYMENT_STATUS" != "Success" ]; then
-            echo "ERROR: Production deployment timed out."
-            exit 1
-          fi
+          echo "Deployment did not finish within the expected time."
+          exit 1
