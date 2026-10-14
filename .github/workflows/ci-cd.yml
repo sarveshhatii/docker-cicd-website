@@ -32,8 +32,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v2
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-1 # Change to your AWS region
-          
+          aws-region: ap-south-1 
       # 4. Deploy to EC2 using SSM (Updates compose file and restarts containers)
       - name: Deploy image to EC2 using SSM
         run: |
