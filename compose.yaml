@@ -1,7 +1,17 @@
+version: '3.8'
 services:
   website:
     image: sarveshhatii/cicd-website:latest
     container_name: cicd-website
-    ports:
-      - "80:80"
     restart: unless-stopped
+  nginx-proxy-manager:
+    image: 'jc21/nginx-proxy-manager:latest'
+    container_name: nginx-proxy-manager
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '81:81'
+      - '443:443'
+    volumes:
+      - ./data:/data
+      - ./letsencrypt:/etc/letsencrypt
