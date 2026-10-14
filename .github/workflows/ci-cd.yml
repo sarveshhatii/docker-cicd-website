@@ -1,92 +1,59 @@
-name: Docker CI/CD to AWS EC2
+name: CI/CD to AWS EC2
 
 on:
   push:
-    branches:
-      - main
-
-permissions:
-  contents: read
-  id-token: write
-
-env:
-  DOCKERHUB_IMAGE: sarveshhatii/cicd-website
-  AWS_REGION: ap-south-1
-  EC2_INSTANCE_ID: i-050f5b054472305cf
+    branches: [ main ]
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
+      # 1. Log in to Docker Hub
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v2
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
+      # 2. Build and push Docker image
       - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v4
         with:
           context: .
           push: true
-          tags: |
-            ${{ env.DOCKERHUB_IMAGE }}:latest
-            ${{ env.DOCKERHUB_IMAGE }}:${{ github.sha }}
+          tags: ${{ secrets.DOCKER_USERNAME }}/cicd-website:latest
 
-      - name: Configure AWS credentials using OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+      # 3. Configure AWS Credentials via OIDC
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
         with:
-          role-to-assume: arn:aws:iam::020671572525:role/GitHubActions-EC2-Deploy
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Deploy image to EC2 using SSM
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$EC2_INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --comment "Deploy website from GitHub Actions" \
-            --parameters '{"commands":["set -e","cd /home/ubuntu/docker-cicd-website","sudo docker compose pull","sudo docker compose up -d --remove-orphans","sudo docker compose ps"]}' \
-            --query 'Command.CommandId' \
-            --output text)
-
-          echo "SSM Command ID: $COMMAND_ID"
-
-          for i in {1..30}; do
-            STATUS=$(aws ssm get-command-invocation \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$EC2_INSTANCE_ID" \
-              --query 'Status' \
-              --output text 2>/dev/null || true)
-
-            echo "Deployment status: $STATUS"
-
-            if [ "$STATUS" = "Success" ]; then
-              exit 0
-            fi
-
-            if [ "$STATUS" = "Failed" ] || \
-               [ "$STATUS" = "Cancelled" ] || \
-               [ "$STATUS" = "TimedOut" ]; then
-              aws ssm get-command-invocation \
-                --command-id "$COMMAND_ID" \
-                --instance-id "$EC2_INSTANCE_ID" \
-                --output json
-              exit 1
-            fi
-
-            sleep 10
-          done
-
-          echo "Deployment did not finish within the expected time."
-          exit 1
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1 # Change to your AWS region
           
+      # 4. Deploy to EC2 using SSM (Updates compose file and restarts containers)
+      - name: Deploy image to EC2 using SSM
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["sudo mkdir -p /home/ubuntu/docker-cicd-website", "cat << 'EOF' > /home/ubuntu/docker-cicd-website/docker-compose.yml\nservices:\n  website:\n    image: ${{ secrets.DOCKER_USERNAME }}/cicd-website:latest\n    container_name: cicd-website\n    ports:\n      - \"80:80\"\n    restart: unless-stopped\nEOF\n", "cd /home/ubuntu/docker-cicd-website", "sudo docker compose pull", "sudo docker rm -f cicd-website || true", "sudo docker compose up -d"]' \
+            --query "Command.CommandId" \
+            --output text)
+          
+          echo "SSM Command ID: $COMMAND_ID"
+          
+          # Wait for command completion
+          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "${{ secrets.EC2_INSTANCE_ID }}"
+          
+          # Check command status
+          STATUS=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "${{ secrets.EC2_INSTANCE_ID }}" --query "Status" --output text)
+          echo "Deployment status: $STATUS"
+          
+          if [ "$STATUS" != "Success" ]; then
+            aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "${{ secrets.EC2_INSTANCE_ID }}"
+            exit 1
+          fi
